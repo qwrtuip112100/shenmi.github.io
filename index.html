@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多房间聊天室 - 实时版</title>
+    <!-- 引入 Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore-compat.js"></script>
+    <style>
+        /* 保持原有的CSS样式不变 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        /* ... 其余CSS样式保持不变 ... */
+    </style>
+</head>
+<body>
+    <!-- 保持原有的HTML结构不变 -->
+    <div class="container">
+        <header>
+            <div class="user-profile">
+                <div class="avatar" id="userAvatar">
+                    <span>头像</span>
+                </div>
+                <div class="user-info">
+                    <div class="user-name" id="userName">游客</div>
+                    <div class="user-bio" id="userBio">点击头像设置个人信息</div>
+                </div>
+            </div>
+            <div class="invite-code-section">
+                <input type="text" id="inviteCodeInput" placeholder="输入管理员邀请码">
+                <button id="submitInviteCode">提交</button>
+            </div>
+        </header>
+        
+        <div class="main-content">
+            <div class="rooms-panel">
+                <div class="rooms-header">
+                    <h2>聊天房间</h2>
+                    <button class="create-room-btn" id="createRoomBtn">创建房间</button>
+                </div>
+                <div class="rooms-list" id="roomsList">
+                    <!-- 房间列表将通过JavaScript动态生成 -->
+                </div>
+            </div>
+            
+            <div class="chat-panel">
+                <div class="chat-header">
+                    <h2 id="currentRoomName">选择一个房间开始聊天</h2>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <!-- 聊天消息将通过JavaScript动态生成 -->
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" class="chat-input" id="messageInput" placeholder="输入消息..." disabled>
+                    <button class="send-btn" id="sendMessageBtn" disabled>发送</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 模态框等HTML结构保持不变 -->
+    
+    <script>
+        // Firebase配置 - 你需要去Firebase官网创建项目并获取这些配置
+        const firebaseConfig = {
+            apiKey: "AIzaSyABC123...", // 替换为你的apiKey
+            authDomain: "your-chat-app.firebaseapp.com", // 替换为你的authDomain
+            projectId: "your-chat-app-12345", // 替换为你的projectId
+            storageBucket: "your-chat-app.appspot.com", // 替换为你的storageBucket
+            messagingSenderId: "123456789", // 替换为你的messagingSenderId
+            appId: "1:123456789:web:abc123def456" // 替换为你的appId
+        };
+
+        // 初始化Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        // 全局变量
+        let currentUser = {
+            name: '游客',
+            bio: '点击头像设置个人信息',
+            avatar: null,
+            isAdmin: false,
+            id: generateUserId()
+        };
+        
+        let rooms = [];
+        let currentRoomId = null;
+
+        // 生成用户ID
+        function generateUserId() {
+            return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        }
+
+        // 初始化
+        async function init() {
+            // 从本地存储加载用户数据
+            loadUserData();
+            
+            // 设置Firebase实时监听
+            setupFirebaseListeners();
+            
+            // 事件监听
+            setupEventListeners();
+        }
+
+        // 设置Firebase实时监听
+        function setupFirebaseListeners() {
+            // 监听房间变化
+            db.collection("rooms").onSnapshot((snapshot) => {
+                rooms = [];
+                snapshot.forEach((doc) => {
+                    rooms.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+                renderRooms();
+            });
+
+            // 监听消息变化
+            if (currentRoomId) {
+                db.collection("rooms").doc(currentRoomId).collection("messages")
+                    .orderBy("timestamp", "asc")
+                    .onSnapshot((snapshot) => {
+                        renderMessages();
+                    });
+            }
+        }
+
+        // 从本地存储加载用户数据
+        function loadUserData() {
+            const savedUser = localStorage.getItem('chatUser');
+            if (savedUser) {
+                const userData = JSON.parse(savedUser);
+                currentUser = {
+                    ...currentUser,
+                    ...userData,
+                    id: userData.id || generateUserId() // 保持用户ID不变
+                };
+                updateUserUI();
+            }
+        }
+
+        // 保存用户数据到本地存储
+        function saveUserData() {
+            localStorage.setItem('chatUser', JSON.stringify(currentUser));
+        }
+
+        // 创建房间（保存到Firebase）
+        async function createRoom(roomName, roomDescription) {
+            try {
+                const newRoom = {
+                    name: roomName,
+                    description: roomDescription || '暂无描述',
+                    creator: currentUser.name,
+                    creatorId: currentUser.id,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    userCount: 0
+                };
+                
+                const docRef = await db.collection("rooms").add(newRoom);
+                showToast(`房间 "${roomName}" 创建成功`);
+                return docRef.id;
+            } catch (error) {
+                console.error("创建房间错误:", error);
+                showToast("创建房间失败", "error");
+            }
+        }
+
+        // 发送消息（保存到Firebase）
+        async function sendMessage() {
+            const text = messageInput.value.trim();
+            
+            if (!text || !currentRoomId) {
+                return;
+            }
+            
+            try {
+                const newMessage = {
+                    text: text,
+                    sender: currentUser.name,
+                    senderId: currentUser.id,
+                    avatar: currentUser.avatar,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                
+                await db.collection("rooms").doc(currentRoomId).collection("messages").add(newMessage);
+                messageInput.value = '';
+            } catch (error) {
+                console.error("发送消息错误:", error);
+                showToast("发送消息失败", "error");
+            }
+        }
+
+        // 渲染消息（从Firebase读取）
+        async function renderMessages() {
+            chatMessages.innerHTML = '';
+            
+            if (!currentRoomId) {
+                chatMessages.innerHTML = '<div class="message">选择一个房间开始聊天</div>';
+                return;
+            }
+            
+            try {
+                const snapshot = await db.collection("rooms").doc(currentRoomId)
+                    .collection("messages")
+                    .orderBy("timestamp", "asc")
+                    .get();
+                
+                if (snapshot.empty) {
+                    chatMessages.innerHTML = '<div class="message">暂无消息，开始聊天吧</div>';
+                    return;
+                }
+                
+                snapshot.forEach((doc) => {
+                    const msg = doc.data();
+                    const messageElement = document.createElement('div');
+                    messageElement.className = `message ${msg.senderId === currentUser.id ? 'own' : ''}`;
+                    
+                    const time = msg.timestamp ? 
+                        new Date(msg.timestamp.toDate()).toLocaleTimeString() : 
+                        '刚刚';
+                    
+                    messageElement.innerHTML = `
+                        <div class="message-avatar">
+                            ${msg.avatar ? `<img src="${msg.avatar}" alt="头像">` : '<span>头像</span>'}
+                        </div>
+                        <div class="message-content">
+                            <div class="message-sender">${msg.sender}</div>
+                            <div class="message-text">${msg.text}</div>
+                            <div class="message-time">${time}</div>
+                            ${currentUser.isAdmin ? `
+                                <div class="admin-controls">
+                                    <button class="admin-btn" onclick="deleteMessage('${doc.id}')">删除</button>
+                                    <button class="admin-btn info" onclick="banUser('${msg.senderId}')">拉黑</button>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                    
+                    chatMessages.appendChild(messageElement);
+                });
+                
+                // 滚动到底部
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            } catch (error) {
+                console.error("加载消息错误:", error);
+                chatMessages.innerHTML = '<div class="message">加载消息失败</div>';
+            }
+        }
+
+        // 管理员功能 - 删除消息
+        async function deleteMessage(messageId) {
+            if (!currentUser.isAdmin) {
+                showToast('您没有权限执行此操作', 'error');
+                return;
+            }
+            
+            try {
+                await db.collection("rooms").doc(currentRoomId)
+                    .collection("messages").doc(messageId).delete();
+                showToast('消息已删除');
+            } catch (error) {
+                console.error("删除消息错误:", error);
+                showToast("删除消息失败", "error");
+            }
+        }
+
+        // 其余函数保持不变，只需要修改数据保存部分...
+        
+        // 初始化应用
+        init();
+    </script>
+</body>
+</html>
